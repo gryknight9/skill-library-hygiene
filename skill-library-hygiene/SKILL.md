@@ -1,77 +1,60 @@
 ---
 name: skill-library-hygiene
-description: "Audit local SKILL.md bodies for context bloat."
-version: 1.0.0
+description: Audit local skills for context cost and stale content.
+version: 1.1.0
 author: gryknight9, Hermes Agent
 license: MIT
-platforms: [linux]
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [skills, context-window, maintenance]
     related_skills: []
 ---
 
-# Skill Library Hygiene (personal library)
+# Skill Library Hygiene
 
-Context-cost auditing and restructuring of the **user-local** skill library at `~/.hermes/skills/`. Not for in-repo authoring conventions (that's a separate bundled concern).
+Audit and safely restructure the active Hermes profile's local skill library. It measures context cost, uses Hermes’ curator telemetry, and checks reference-file links without treating unused skills as disposable.
 
 ## When to Use
-- Context window is bloated and skills are suspected as the cause (`hermes prompt-size --json`, agent.log deferred-token lines)
-- User asks why a routine task costs X tokens / wants the skill index shrunk
-- Periodic library pass: restructure fat bodies, find unused skills, propose demotions
-- Before deleting an existing skill (telemetry + pointer checks below)
 
-Don't use for: writing new skills from scratch, or editing bundled/hub/pinned/user-owned skills — those need sign-off or `hermes curator adopt <name>`.
+- Context cost is high and installed skills may be contributing.
+- A user wants to find stale or oversized local skills.
+- Before restructuring, archiving, or deleting an existing local skill.
 
-## Why it matters (cost model)
-1. **Index tax:** every skill's name + ~57-char description ships in `<available_skills>` in EVERY session's system prompt, used or not. 120+ skills = permanent per-turn cost with no offsetting value on the ones never loaded.
-2. **Body re-load:** matching a task loads the FULL SKILL.md into context. No caching between sessions or across compaction — each consultation re-pays the whole body. A 48KB skill loaded twice in one long session costs its tokens twice.
+Don't use for authoring an in-repository skill or for automatic deletion. Use the in-repo skill-authoring workflow for repository-managed skills.
 
-Both channels scale linearly with library size/fatness; neither has automatic cleanup. This skill exists because organic growth (lessons appended to bodies over months) silently fattens both.
+## Prerequisites
 
-## Core procedure: library audit
+- Run commands through `terminal` in the intended Hermes profile. The scripts resolve the library from `$HERMES_HOME`, falling back to `~/.hermes`; pass an explicit directory when auditing another profile.
+- `hermes curator usage --json` must be available. It is the telemetry source of truth; do not invent or read a `.usage.json` sidecar file.
 
-```python
-# Measure: walk all SKILL.md, join usage telemetry, sort by size
-import os, json
-base=os.path.expanduser('~/.hermes/skills')
-u=json.load(open(base+'.usage.json'))   # name -> {use_count/loads, last_used} shape varies; inspect first
-rows=[]
-for root,dirs,files in os.walk(base):
-    if 'SKILL.md' in files:
-        p=os.path.join(root,'SKILL.md')
-        rel=os.path.relpath(p,base).replace('/SKILL.md','').replace('devops/devops/','')
-        meta=u.get(rel,{})
-        rows.append((os.path.getsize(p), meta.get('use_count',meta.get('loads',0)), str(meta.get('last_used','')), rel))
-rows.sort(reverse=True); [print(f"{c:>7} {l:>4} {lu:<12} {n}") for c,l,lu,n in rows]
-```
+## Procedure
 
-Bands of interest: >15k chars = restructure candidates; 9–15k = consider; zero loads + never used = demotion candidates (decision goes to the user — never disable/delete unilaterally).
+1. **Take a recoverable snapshot before changing anything.** Run `terminal(command="hermes curator backup --reason 'before skill-library hygiene pass'", timeout=30)` after the user approves the scope. Completion: curator reports the snapshot.
+2. **Measure active skills and curator telemetry.** Run `terminal(command="python3 scripts/audit_library.py", timeout=30)` from this skill's directory. To audit another profile, use `terminal(command="python3 scripts/audit_library.py --skills-dir /path/to/profile/skills", timeout=30)`. Completion: every non-archived `SKILL.md` is listed with chars, use count, last activity, state, provenance, and relative path.
+3. **Choose candidates, not victims.** Treat more than 15k chars as a restructure candidate and 9–15k as a review candidate. Zero usage is only a prompt for review: consult provenance, pinned state, cron references, and last activity before proposing archive or deletion.
+4. **Restructure one skill at a time.** Keep triggers, safety constraints, essential environment facts, and a concise reference index in `SKILL.md`. Move long examples, incident history, API listings, and edge-case catalogs into `references/` or `references/archive/`. Use `patch` or `write_file` for the change; do not leave `SKILL.md.bak-*` copies inside the live skill tree.
+5. **Check reference pointers.** Run `terminal(command="python3 scripts/verify_ptrs.py <skill-dir>", timeout=30)` for every touched skill. Local pointers use `references/<topic>.md`; cross-skill pointers use `other-skill/references/<topic>.md`. Every unresolved or unsafe pointer is a failure. Completion: exit status 0.
+6. **Check incoming dependencies and scheduled use.** Use `search_files` to find the skill name in the active profile's other `SKILL.md` files and cron-job configuration before archiving or deleting. Repoint every valid dependency or record it as a blocker. Completion: every incoming reference is accounted for.
+7. **Archive or delete only with explicit user approval.** Prefer the reversible `terminal(command="hermes curator archive <skill>", timeout=30)` for a reviewed candidate. Use `hermes curator restore <skill>` to undo an archive. Purge/delete is a separate, explicit decision.
 
-## Restructure pattern (lean core + references)
-Per skill, one batch at a time so progress survives compaction:
-1. `cp SKILL.md SKILL.md.bak-<YYYYMMDD>` alongside.
-2. New body ≤ ~10k chars keeping only: trigger conditions, cold environment facts (hostnames, ports, credential locations), safety rules / high-frequency pitfalls that cause real damage if missing, and a domain index table mapping work area → specific `references/<file>.md`.
-3. Move out: command tables with worked examples, incident histories ("what happened last Tuesday"), API listings, edge-case catalogs, long troubleshooting trees. Stale one-offs → `references/archive/` inside the same skill. Nothing deleted without asking.
-4. Verify: run `scripts/verify_ptrs.py <skill-dir>` per touched skill — prints local `references/*.md` pointer status + body char count (use the after-count for the before/after table). PITFALL: always run pointer checks from a script file like this — inline heredoc or execute_code snippets get their quoting corrupted by sandboxing and produce false failures. Cross-skill pointers must name **specific files** in the sibling's references dir — never "see skill X" (force-loads the whole sibling body). Zero dangling pointers before moving on, AND sweep sibling skills that point INTO the restructured skill (a rewrite can orphan an incoming cross-pointer) — flag every hit as a fix-or-repoint item in the progress file rather than silently deleting it.
+## Pointer Rules
 
-Never append lessons to bodies — that is how skills rot from 8k to 48k. Rule-level lesson → patch into body; otherwise → relevant reference file.
+- Local links must remain below the touched skill directory: `references/<topic>.md`.
+- Cross-skill links must remain below the active library root: `other-skill/references/<topic>.md`.
+- `..`, absolute paths, and symlinks resolving outside their allowed root are unsafe and fail validation.
+- A prose instruction such as “see skill X” is not a reference pointer. Name the exact file when a linked reference is required.
 
-## Multi-skill passes: compaction-safe method
-A library-wide pass ALWAYS spans context compactions. Without external state you will redo or skip work after each compression boundary.
-- Keep a running tally in a progress file OUTSIDE the skills tree (e.g. in your notes or wiki): `skill | before | after | notes`, updated after EVERY completed skill.
-- Handoff prompt for continuation sessions MUST instruct: after any compaction, read the progress file first; do not redo finished skills.
-- For large passes, prefer a fresh session started from a self-contained handoff prompt (state + rules + deliverable) over continuing a near-full context.
+## Pitfalls
 
-## Delete / demote discipline
-Before removing or disabling an existing skill:
-1. Usage telemetry (`.usage.json`) — loads, last-used date.
-2. Grep all other SKILL.md bodies AND cron job configs (`~/.hermes/cron/jobs.json` prompts + skills lists) for pointers to it.
-3. Zero loads + zero pointers = safe candidate; still confirm with the user. Agent-created deletion needs explicit sign-off.
-4. Bundled/vendor product-y skills (claude-code, notion, box, airtable…): propose disable via profile `skills.disabled` as a decision item; never act silently.
+- Profiles have separate homes. A hard-coded `~/.hermes/skills` can audit the wrong library when a named profile is active.
+- Curator telemetry includes `use_count`, `view_count`, activity timestamps, provenance, and state. Do not infer staleness from a nonexistent JSON file.
+- `hermes curator run --dry-run` previews curator behavior; it does not replace pointer checks after manual restructuring.
+- Do not equate an empty reference list with a passing test of the checker. Run the regression tests after modifying either helper script.
 
 ## Verification
-- Dangling-pointer check output shows zero unresolved across every touched skill.
-- Per-skill before/after table written up; total recurring body-cost delta computed (chars × ~0.25 ≈ tokens).
-- If you maintain an operations registry or wiki, record the pass there too; otherwise the progress file is the deliverable.
-- Spot-check one restructured skill live (`skill_view`) — new body renders, index table matches real files.
+
+- `python3 -m unittest discover -s tests -v` passes.
+- `verify_ptrs.py` returns 0 for every touched skill.
+- The before/after report lists the recurring character delta and every changed, archived, or deferred skill.
+- The user has approved any archive or deletion, and a curator snapshot exists for structural changes.
