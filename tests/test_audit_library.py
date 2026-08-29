@@ -9,7 +9,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 
 
-SCRIPT = Path(__file__).parents[1] / "skill-library-hygiene" / "scripts" / "audit_library.py"
+SCRIPT = Path(__file__).parents[1] / "skills" / "skill-library-hygiene" / "scripts" / "audit_library.py"
 SPEC = importlib.util.spec_from_file_location("audit_library", SCRIPT)
 assert SPEC and SPEC.loader
 audit_library = importlib.util.module_from_spec(SPEC)

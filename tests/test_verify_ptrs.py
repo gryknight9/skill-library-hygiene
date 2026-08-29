@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 
-SCRIPT = Path(__file__).parents[1] / "skill-library-hygiene" / "scripts" / "verify_ptrs.py"
+SCRIPT = Path(__file__).parents[1] / "skills" / "skill-library-hygiene" / "scripts" / "verify_ptrs.py"
 SPEC = importlib.util.spec_from_file_location("verify_ptrs", SCRIPT)
 assert SPEC and SPEC.loader
 verify_ptrs = importlib.util.module_from_spec(SPEC)

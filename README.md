@@ -18,17 +18,36 @@ It is not a general YAML-schema linter and it does not delete skills automatical
 
 ```text
 skill-library-hygiene/
-├── skill-library-hygiene/
-│   ├── SKILL.md
-│   └── scripts/
-│       ├── audit_library.py
-│       └── verify_ptrs.py
-└── tests/
-    ├── test_audit_library.py
-    └── test_verify_ptrs.py
+├── skills/
+│   └── skill-library-hygiene/
+│       ├── SKILL.md
+│       └── scripts/
+│           ├── audit_library.py
+│           └── verify_ptrs.py
+├── tests/
+│   ├── test_audit_library.py
+│   └── test_verify_ptrs.py
+└── README.md
 ```
 
-The installable skill is `skill-library-hygiene/SKILL.md`. Its Python helpers use only the standard library.
+The installable skill is `skills/skill-library-hygiene/SKILL.md`. Its Python helpers use only the standard library.
+
+## Install from a Hermes tap
+
+After this repository is public, another Hermes user can subscribe to the tap and install the skill:
+
+```bash
+hermes skills tap add gryknight9/skill-library-hygiene
+hermes skills install gryknight9/skill-library-hygiene/skill-library-hygiene
+```
+
+To install only this skill without retaining a tap subscription:
+
+```bash
+hermes skills install gryknight9/skill-library-hygiene/skills/skill-library-hygiene
+```
+
+Hermes security-scans community skills during installation. The repository remains private until its GitHub visibility is changed separately.
 
 ## Prerequisites
 
@@ -46,7 +65,7 @@ cd skill-library-hygiene
 
 # Audit the profile explicitly. Supplying --skills-dir avoids auditing the
 # wrong profile when multiple Hermes profiles are installed.
-python3 skill-library-hygiene/scripts/audit_library.py \
+python3 skills/skill-library-hygiene/scripts/audit_library.py \
   --skills-dir ~/.hermes/profiles/noc/skills
 
 # Example output:
@@ -64,7 +83,7 @@ HERMES_HOME=~/.hermes/profiles/noc hermes curator backup \
 # Move only long examples/history into references/; keep triggers, safety
 # constraints, and a short reference index in SKILL.md. Then validate pointers.
 HERMES_HOME=~/.hermes/profiles/noc \
-  python3 skill-library-hygiene/scripts/verify_ptrs.py \
+  python3 skills/skill-library-hygiene/scripts/verify_ptrs.py \
   ~/.hermes/profiles/noc/skills/devops/network-troubleshooting \
   ~/.hermes/profiles/noc/skills
 
@@ -111,8 +130,8 @@ hermes skills check
 hermes skills audit --deep skill-library-hygiene
 
 # 2. Measure the profile and verify reference safety.
-python3 skill-library-hygiene/scripts/audit_library.py
-python3 skill-library-hygiene/scripts/verify_ptrs.py <skill-dir>
+python3 skills/skill-library-hygiene/scripts/audit_library.py
+python3 skills/skill-library-hygiene/scripts/verify_ptrs.py <skill-dir>
 ```
 
 ## Relationship to `agent-skills-lint`
@@ -144,9 +163,9 @@ npx @swarmclawai/agent-skills-lint@0.1.0 \
 ## Development
 
 ```bash
-python3 -m py_compile skill-library-hygiene/scripts/*.py tests/*.py
+python3 -m py_compile skills/skill-library-hygiene/scripts/*.py tests/*.py
 python3 -m unittest discover -s tests -v
-python3 skill-library-hygiene/scripts/verify_ptrs.py skill-library-hygiene
+python3 skills/skill-library-hygiene/scripts/verify_ptrs.py skills/skill-library-hygiene
 ```
 
 The test suite covers local and cross-skill pointers, missing targets, path traversal, absolute pointer paths, profile-root resolution, symlink escape prevention, hidden-tree exclusion, and curator telemetry identity mapping.
