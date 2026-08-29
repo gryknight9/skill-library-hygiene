@@ -34,11 +34,13 @@ The installable skill is `skills/skill-library-hygiene/SKILL.md`. Its Python hel
 
 ## Install from a Hermes tap
 
-After this repository is public, another Hermes user can subscribe to the tap and install the skill:
+Another Hermes user can subscribe to the tap, search it, and install the identifier that Hermes returns:
 
 ```bash
 hermes skills tap add gryknight9/skill-library-hygiene
-hermes skills install gryknight9/skill-library-hygiene/skill-library-hygiene
+hermes skills search skill-library-hygiene --source github --json
+# Install the returned identifier:
+hermes skills install gryknight9/skill-library-hygiene/skills/skill-library-hygiene
 ```
 
 To install only this skill without retaining a tap subscription:
@@ -47,7 +49,7 @@ To install only this skill without retaining a tap subscription:
 hermes skills install gryknight9/skill-library-hygiene/skills/skill-library-hygiene
 ```
 
-Hermes security-scans community skills during installation. The repository remains private until its GitHub visibility is changed separately.
+Hermes security-scans community skills during installation.
 
 ## Prerequisites
 
