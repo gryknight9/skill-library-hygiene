@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -21,6 +22,22 @@ from typing import Any, Sequence
 
 def default_skills_dir() -> Path:
     return Path(os.environ.get("HERMES_HOME", "~/.hermes")).expanduser() / "skills"
+
+
+def manifest_skill_name(text: str, source: Path) -> str:
+    """Read the canonical skill identity from YAML frontmatter without PyYAML."""
+    if not text.startswith("---"):
+        raise ValueError(f"{source}: frontmatter must start with ---")
+    for line in text.splitlines()[1:]:
+        if line.strip() == "---":
+            break
+        match = re.fullmatch(r"name:\s*(.+?)\s*", line)
+        if match:
+            name = match.group(1).strip().strip("\"'")
+            if re.fullmatch(r"[a-z0-9][a-z0-9_-]*", name):
+                return name
+            raise ValueError(f"{source}: invalid frontmatter name {name!r}")
+    raise ValueError(f"{source}: missing frontmatter name")
 
 
 def load_usage(usage_json: Path | None) -> dict[str, dict[str, Any]]:
@@ -75,8 +92,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     rows: list[tuple[int, int, str, str, str, str, str]] = []
     for skill_file in skill_files(skills_dir):
         text = skill_file.read_text(encoding="utf-8")
+        try:
+            skill_name = manifest_skill_name(text, skill_file)
+        except ValueError as exc:
+            print(f"MANIFEST ERROR: {exc}", file=sys.stderr)
+            return 1
         relative = skill_file.parent.relative_to(skills_dir).as_posix()
-        metadata = usage.get(skill_file.parent.name, {})
+        metadata = usage.get(skill_name, {})
         rows.append(
             (
                 len(text),
@@ -85,7 +107,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 str(metadata.get("state") or "unknown"),
                 str(metadata.get("provenance") or "unknown"),
                 relative,
-                skill_file.parent.name,
+                skill_name,
             )
         )
 

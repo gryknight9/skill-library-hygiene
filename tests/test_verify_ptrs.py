@@ -82,6 +82,19 @@ class VerifyPointersTests(unittest.TestCase):
         self.assertIn("CROSS-SKILL MISSING OR UNSAFE", output)
         self.assertIn("other-skill/references/missing.md", output)
 
+    def test_absolute_pointer_forms_are_rejected(self) -> None:
+        self.write_skill(
+            "/tmp/references/secret.md",
+            "/other-skill/references/secret.md",
+        )
+
+        status, output = self.invoke_checker()
+
+        self.assertEqual(status, 1)
+        self.assertIn("UNSAFE ABSOLUTE POINTERS", output)
+        self.assertIn("/tmp/references/secret.md", output)
+        self.assertIn("/other-skill/references/secret.md", output)
+
     def test_path_traversal_is_rejected(self) -> None:
         outside = self.root / "outside.md"
         outside.write_text("must not resolve", encoding="utf-8")

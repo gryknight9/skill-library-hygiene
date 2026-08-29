@@ -23,7 +23,7 @@ class AuditLibraryTests(unittest.TestCase):
             skills = root / "skills"
             skill = skills / "devops" / "example"
             skill.mkdir(parents=True)
-            manifest = "---\nname: example\n---\n# Example\n"
+            manifest = "---\nname: canonical-example\n---\n# Example\n"
             (skill / "SKILL.md").write_text(manifest, encoding="utf-8")
             archived = skills / ".archive" / "old"
             archived.mkdir(parents=True)
@@ -33,7 +33,7 @@ class AuditLibraryTests(unittest.TestCase):
                 json.dumps(
                     [
                         {
-                            "name": "example",
+                            "name": "canonical-example",
                             "use_count": 7,
                             "last_activity_at": "2026-08-29T00:00:00+00:00",
                             "state": "active",

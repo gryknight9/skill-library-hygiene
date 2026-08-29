@@ -31,6 +31,10 @@ CROSS_POINTER = re.compile(
     r"(?<![\w/-])(?P<pointer>(?P<skill>[A-Za-z0-9_-]+)/references/"
     r"(?P<relative>[A-Za-z0-9_.\-/]+\.md))"
 )
+ABSOLUTE_POINTER = re.compile(
+    r"(?<![\w:/-])(?P<pointer>/[A-Za-z0-9_.\-/]*references/"
+    r"[A-Za-z0-9_.\-/]+\.md)"
+)
 
 
 class Pointer(NamedTuple):
@@ -62,6 +66,8 @@ def parse_pointers(body: str) -> list[Pointer]:
                 Path(match.group("skill")) / "references" / match.group("relative"),
             )
         )
+    for match in ABSOLUTE_POINTER.finditer(body):
+        pointers.add(Pointer("unsafe", match.group("pointer"), Path(match.group("pointer"))))
     return sorted(pointers, key=lambda pointer: (pointer.kind, pointer.text))
 
 
@@ -78,8 +84,8 @@ def safe_target(root: Path, relative: Path) -> Path | None:
     return target
 
 
-def verify(skill_dir: Path, library_root: Path) -> tuple[list[str], list[str]]:
-    """Return missing/unsafe local and cross-skill pointer lists."""
+def verify(skill_dir: Path, library_root: Path) -> tuple[list[str], list[str], list[str]]:
+    """Return missing local, missing cross-skill, and unsafe pointer lists."""
     skill_file = skill_dir / "SKILL.md"
     try:
         body = skill_file.read_text(encoding="utf-8")
@@ -88,7 +94,11 @@ def verify(skill_dir: Path, library_root: Path) -> tuple[list[str], list[str]]:
 
     local_failures: list[str] = []
     cross_failures: list[str] = []
+    unsafe_failures: list[str] = []
     for pointer in parse_pointers(body):
+        if pointer.kind == "unsafe":
+            unsafe_failures.append(f"{pointer.text} (absolute path)")
+            continue
         root = skill_dir if pointer.kind == "local" else library_root
         target = safe_target(root, pointer.relative)
         if target is None:
@@ -101,7 +111,7 @@ def verify(skill_dir: Path, library_root: Path) -> tuple[list[str], list[str]]:
             local_failures.append(failure)
         else:
             cross_failures.append(failure)
-    return local_failures, cross_failures
+    return local_failures, cross_failures, unsafe_failures
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -135,17 +145,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
     try:
-        local_failures, cross_failures = verify(skill_dir, library_root)
+        local_failures, cross_failures, unsafe_failures = verify(skill_dir, library_root)
     except OSError as exc:
         print(f"UNREADABLE SKILL.md: {exc}")
         return 1
 
     print_failures("LOCAL MISSING OR UNSAFE", local_failures)
     print_failures("CROSS-SKILL MISSING OR UNSAFE", cross_failures)
-    if not local_failures and not cross_failures:
+    print_failures("UNSAFE ABSOLUTE POINTERS", unsafe_failures)
+    if not local_failures and not cross_failures and not unsafe_failures:
         print("all reference pointers resolve safely")
     print(f"chars: {len(skill_file.read_text(encoding='utf-8'))}")
-    return 1 if local_failures or cross_failures else 0
+    return 1 if local_failures or cross_failures or unsafe_failures else 0
 
 
 if __name__ == "__main__":
