@@ -388,5 +388,82 @@ class CuratorRecordValidationTests(unittest.TestCase):
         self.assertIn("total skills: 1", out)
 
 
+class ManifestFrontmatterTests(unittest.TestCase):
+    """Regression coverage for issue #4: frontmatter must be well-formed."""
+
+    SOURCE = Path("skills/example/SKILL.md")
+
+    def parse(self, text: str) -> str:
+        return audit_library.manifest_skill_name(text, self.SOURCE)
+
+    def assert_rejected(self, text: str, expected: str) -> None:
+        with self.assertRaises(ValueError) as caught:
+            self.parse(text)
+        self.assertIn(expected, str(caught.exception))
+
+    def test_unterminated_frontmatter_is_rejected(self) -> None:
+        # The reported case: valid name, no closing delimiter.
+        self.assert_rejected(
+            "---\nname: example\n# no closing delimiter\n", "unterminated frontmatter"
+        )
+
+    def test_unterminated_with_nothing_after_name_is_rejected(self) -> None:
+        self.assert_rejected("---\nname: example\n", "unterminated frontmatter")
+
+    def test_duplicate_name_fields_are_rejected(self) -> None:
+        self.assert_rejected(
+            "---\nname: first\nname: second\n---\n", "duplicate frontmatter name"
+        )
+
+    def test_opening_delimiter_must_be_its_own_line(self) -> None:
+        # startswith("---") also matched these; a --- line does not.
+        self.assert_rejected("----\nname: example\n---\n", "must start with a --- line")
+        self.assert_rejected("--- yaml\nname: example\n---\n", "must start with a --- line")
+
+    def test_name_below_the_closing_delimiter_is_not_frontmatter(self) -> None:
+        self.assert_rejected("---\ntitle: x\n---\nname: notreally\n", "missing frontmatter name")
+
+    def test_empty_and_missing_frontmatter_are_rejected(self) -> None:
+        self.assert_rejected("---\n---\n# body\n", "missing frontmatter name")
+        self.assert_rejected("", "must start with a --- line")
+        self.assert_rejected("# just a heading\n", "must start with a --- line")
+
+    def test_invalid_name_values_are_rejected(self) -> None:
+        self.assert_rejected("---\nname: Example\n---\n", "invalid frontmatter name")
+        self.assert_rejected("---\nname: has space\n---\n", "invalid frontmatter name")
+        self.assert_rejected("---\nname:\n---\n", "invalid frontmatter name")
+
+    def test_well_formed_manifests_are_accepted(self) -> None:
+        self.assertEqual(self.parse("---\nname: example\n---\n# body\n"), "example")
+        self.assertEqual(self.parse('---\nname: "quoted-name"\n---\n'), "quoted-name")
+        self.assertEqual(self.parse("---\nname:   spaced\n---\n"), "spaced")
+        # CRLF manifests are legitimate; splitlines() handles them.
+        self.assertEqual(self.parse("---\r\nname: example\r\n---\r\n"), "example")
+        # A --- rule in the body must not be mistaken for frontmatter.
+        self.assertEqual(
+            self.parse("---\nname: example\n---\n# body\n\n---\n\nmore\n"), "example"
+        )
+
+    def test_malformed_manifest_aborts_the_audit(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            skill = root / "skills" / "bad"
+            skill.mkdir(parents=True)
+            (skill / "SKILL.md").write_text("---\nname: example\n", encoding="utf-8")
+            usage = root / "usage.json"
+            usage.write_text('[{"name": "example", "use_count": 5}]', encoding="utf-8")
+            out, err = io.StringIO(), io.StringIO()
+            with redirect_stdout(out), redirect_stderr(err):
+                status = audit_library.main(
+                    ["--skills-dir", str(root / "skills"), "--usage-json", str(usage)]
+                )
+
+        self.assertEqual(status, 1)
+        self.assertIn("MANIFEST ERROR", err.getvalue())
+        self.assertIn("unterminated frontmatter", err.getvalue())
+        # The unintended identity must not pick up telemetry.
+        self.assertNotIn("5", out.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

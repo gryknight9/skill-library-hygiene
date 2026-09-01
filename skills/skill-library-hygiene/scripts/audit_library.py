@@ -85,19 +85,42 @@ def resolve_telemetry_home(skills_dir: Path, hermes_home: Path | None) -> Path:
 
 
 def manifest_skill_name(text: str, source: Path) -> str:
-    """Read the canonical skill identity from YAML frontmatter without PyYAML."""
-    if not text.startswith("---"):
-        raise ValueError(f"{source}: frontmatter must start with ---")
-    for line in text.splitlines()[1:]:
+    """Read the canonical skill identity from YAML frontmatter without PyYAML.
+
+    The frontmatter block must be delimited by a line that is exactly `---` on
+    both ends. An unterminated block is rejected rather than parsed as far as it
+    goes, and exactly one top-level `name:` key is required, so a manifest can
+    never be audited under an unintended canonical identity.
+    """
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        raise ValueError(f"{source}: frontmatter must start with a --- line")
+
+    closing = None
+    for index, line in enumerate(lines[1:], start=1):
         if line.strip() == "---":
+            closing = index
             break
-        match = re.fullmatch(r"name:\s*(.+?)\s*", line)
+    if closing is None:
+        raise ValueError(f"{source}: unterminated frontmatter (no closing ---)")
+
+    names: list[str] = []
+    for line in lines[1:closing]:
+        match = re.fullmatch(r"name:[ \t]*(.*?)[ \t]*", line)
         if match:
-            name = match.group(1).strip().strip("\"'")
-            if re.fullmatch(r"[a-z0-9][a-z0-9_-]*", name):
-                return name
-            raise ValueError(f"{source}: invalid frontmatter name {name!r}")
-    raise ValueError(f"{source}: missing frontmatter name")
+            names.append(match.group(1).strip().strip("\"'"))
+    if not names:
+        raise ValueError(f"{source}: missing frontmatter name")
+    if len(names) > 1:
+        raise ValueError(
+            f"{source}: duplicate frontmatter name fields {names!r}; "
+            "canonical identity must be unambiguous"
+        )
+
+    name = names[0]
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", name):
+        raise ValueError(f"{source}: invalid frontmatter name {name!r}")
+    return name
 
 
 MAX_DISPLAY_CHARS = 200
