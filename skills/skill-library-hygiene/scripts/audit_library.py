@@ -18,6 +18,12 @@ Manifest discovery is root-isolated: every SKILL.md is resolved and must remain
 below the resolved skills directory. Symlinks within the library are allowed;
 any manifest resolving outside it aborts the audit rather than reporting
 out-of-library data as library data.
+
+Curator telemetry is schema-validated before the report is built: unique
+non-empty string names, non-negative integer use counts (booleans rejected),
+and control-character-free bounded display fields. Malformed telemetry exits 1
+with a diagnostic naming the offending record instead of crashing mid-report or
+silently preferring one of several duplicates. Unknown fields are preserved.
 """
 
 from __future__ import annotations
@@ -94,6 +100,84 @@ def manifest_skill_name(text: str, source: Path) -> str:
     raise ValueError(f"{source}: missing frontmatter name")
 
 
+MAX_DISPLAY_CHARS = 200
+# Table cells are single-line, so tab and newline are corrupting too — no
+# whitespace carve-out here.
+CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+DISPLAY_FIELDS = ("state", "provenance", "last_activity_at")
+
+
+def checked_display(record_index: int, field: str, value: Any) -> str | None:
+    """Accept a display field only when it is safe to print in a table row.
+
+    Curator output reaches a terminal verbatim, so control characters (ANSI
+    escapes, newlines that break row alignment) are rejected rather than
+    rendered. Absent/null is legal and rendered as a placeholder later.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(
+            f"record {record_index}: {field} must be a string or null, "
+            f"got {type(value).__name__}"
+        )
+    if len(value) > MAX_DISPLAY_CHARS:
+        raise ValueError(
+            f"record {record_index}: {field} exceeds {MAX_DISPLAY_CHARS} characters"
+        )
+    if CONTROL_CHARS.search(value):
+        raise ValueError(
+            f"record {record_index}: {field} contains control characters"
+        )
+    return value
+
+
+def validate_records(records: Any) -> dict[str, dict[str, Any]]:
+    """Schema-check curator telemetry and key it by unique skill name.
+
+    Fails closed on malformed input instead of crashing mid-report or silently
+    preferring one of several duplicate records. Unknown extra fields are
+    preserved untouched so new curator fields do not break the audit.
+    """
+    if not isinstance(records, list):
+        raise ValueError("curator usage JSON must be a list")
+    usage: dict[str, dict[str, Any]] = {}
+    for index, record in enumerate(records):
+        if not isinstance(record, dict):
+            raise ValueError(
+                f"record {index}: must be an object, got {type(record).__name__}"
+            )
+        name = record.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f"record {index}: name must be a non-empty string")
+        if CONTROL_CHARS.search(name) or len(name) > MAX_DISPLAY_CHARS:
+            raise ValueError(f"record {index}: unusable name {name!r}")
+        if name in usage:
+            raise ValueError(
+                f"record {index}: duplicate name {name!r}; curator telemetry must "
+                "have one record per skill"
+            )
+        count = record.get("use_count", 0)
+        if count is None:
+            count = 0
+        # bool is a subclass of int; True must not silently become 1 use.
+        if isinstance(count, bool) or not isinstance(count, int):
+            raise ValueError(
+                f"record {index} ({name}): use_count must be an integer, "
+                f"got {count!r}"
+            )
+        if count < 0:
+            raise ValueError(
+                f"record {index} ({name}): use_count must not be negative, got {count}"
+            )
+        checked = dict(record)
+        checked["use_count"] = count
+        for field in DISPLAY_FIELDS:
+            checked[field] = checked_display(index, field, record.get(field))
+        usage[name] = checked
+    return usage
+
+
 def load_usage(
     usage_json: Path | None, hermes_home: Path | None = None
 ) -> dict[str, dict[str, Any]]:
@@ -122,13 +206,7 @@ def load_usage(
     else:
         raw = usage_json.read_text(encoding="utf-8")
     records = json.loads(raw)
-    if not isinstance(records, list):
-        raise ValueError("curator usage JSON must be a list")
-    return {
-        record["name"]: record
-        for record in records
-        if isinstance(record, dict) and isinstance(record.get("name"), str)
-    }
+    return validate_records(records)
 
 
 def contained_manifest(path: Path, resolved_root: Path) -> Path | None:
@@ -235,10 +313,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         rows.append(
             (
                 len(text),
-                int(metadata.get("use_count", 0) or 0),
-                str(metadata.get("last_activity_at") or "-"),
-                str(metadata.get("state") or "unknown"),
-                str(metadata.get("provenance") or "unknown"),
+                # Validated as a non-negative int by validate_records().
+                metadata.get("use_count", 0),
+                metadata.get("last_activity_at") or "-",
+                metadata.get("state") or "unknown",
+                metadata.get("provenance") or "unknown",
                 relative,
                 skill_name,
             )

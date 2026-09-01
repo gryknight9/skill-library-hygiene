@@ -269,5 +269,124 @@ class ManifestRootIsolationTests(unittest.TestCase):
         self.assertIn("broken/SKILL.md", err)
 
 
+class CuratorRecordValidationTests(unittest.TestCase):
+    """Regression coverage for issue #3: malformed telemetry must fail closed."""
+
+    def _run(self, payload: str) -> tuple[int, str, str]:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            skill = root / "skills" / "a"
+            skill.mkdir(parents=True)
+            (skill / "SKILL.md").write_text(
+                "---\nname: alpha\n---\n# a\n", encoding="utf-8"
+            )
+            usage = root / "usage.json"
+            usage.write_text(payload, encoding="utf-8")
+            out, err = io.StringIO(), io.StringIO()
+            with redirect_stdout(out), redirect_stderr(err):
+                status = audit_library.main(
+                    ["--skills-dir", str(root / "skills"), "--usage-json", str(usage)]
+                )
+            return status, out.getvalue(), err.getvalue()
+
+    def assert_rejected(self, payload: str, expected: str) -> None:
+        status, out, err = self._run(payload)
+        self.assertEqual(status, 1, msg=f"expected rejection, got:\n{out}")
+        self.assertIn("USAGE TELEMETRY ERROR", err)
+        self.assertIn(expected, err)
+        # Fail closed: no partial report may be emitted.
+        self.assertNotIn("total chars", out)
+
+    def test_non_numeric_use_count_is_rejected_not_raised(self) -> None:
+        self.assert_rejected(
+            '[{"name": "alpha", "use_count": "unknown"}]', "use_count must be an integer"
+        )
+
+    def test_float_use_count_is_rejected(self) -> None:
+        self.assert_rejected(
+            '[{"name": "alpha", "use_count": 1.5}]', "use_count must be an integer"
+        )
+
+    def test_boolean_use_count_is_rejected(self) -> None:
+        # bool subclasses int, so True would otherwise be reported as 1 use.
+        self.assert_rejected(
+            '[{"name": "alpha", "use_count": true}]', "use_count must be an integer"
+        )
+
+    def test_negative_use_count_is_rejected(self) -> None:
+        self.assert_rejected(
+            '[{"name": "alpha", "use_count": -5}]', "must not be negative"
+        )
+
+    def test_duplicate_names_are_rejected_not_last_wins(self) -> None:
+        payload = json.dumps(
+            [
+                {"name": "alpha", "use_count": 1},
+                {"name": "alpha", "use_count": 900},
+            ]
+        )
+        self.assert_rejected(payload, "duplicate name 'alpha'")
+        _status, out, _err = self._run(payload)
+        self.assertNotIn("900", out)
+
+    def test_control_characters_in_display_fields_are_rejected(self) -> None:
+        self.assert_rejected(
+            json.dumps([{"name": "alpha", "state": "act\x1b[31mive"}]),
+            "state contains control characters",
+        )
+        self.assert_rejected(
+            json.dumps([{"name": "alpha", "provenance": "x\ny"}]),
+            "provenance contains control characters",
+        )
+
+    def test_oversized_display_field_is_rejected(self) -> None:
+        self.assert_rejected(
+            json.dumps([{"name": "alpha", "state": "x" * 201}]), "exceeds 200 characters"
+        )
+
+    def test_missing_and_malformed_names_are_rejected(self) -> None:
+        self.assert_rejected('[{"use_count": 1}]', "name must be a non-empty string")
+        self.assert_rejected('[{"name": "", "use_count": 1}]', "non-empty string")
+        self.assert_rejected('[{"name": 42, "use_count": 1}]', "non-empty string")
+
+    def test_non_object_record_and_non_list_payload_are_rejected(self) -> None:
+        self.assert_rejected('["alpha"]', "must be an object")
+        self.assert_rejected('{"name": "alpha"}', "must be a list")
+
+    def test_valid_records_still_pass_and_preserve_unknown_fields(self) -> None:
+        # Mirrors the real curator schema, including fields this script ignores.
+        payload = json.dumps(
+            [
+                {
+                    "name": "alpha",
+                    "use_count": 12,
+                    "state": "active",
+                    "provenance": "agent",
+                    "last_activity_at": "2026-08-29T00:00:00+00:00",
+                    "pinned": False,
+                    "patch_generation": 0,
+                    "archived_at": None,
+                }
+            ]
+        )
+        status, out, err = self._run(payload)
+        self.assertEqual(status, 0, msg=err)
+        self.assertIn("12", out)
+        self.assertIn("agent", out)
+        usage = audit_library.validate_records(json.loads(payload))
+        self.assertEqual(usage["alpha"]["patch_generation"], 0)
+        self.assertIs(usage["alpha"]["pinned"], False)
+
+    def test_null_use_count_and_null_display_fields_are_tolerated(self) -> None:
+        # Real curator output uses null for never-used skills.
+        status, out, err = self._run(
+            json.dumps(
+                [{"name": "alpha", "use_count": None, "last_activity_at": None}]
+            )
+        )
+        self.assertEqual(status, 0, msg=err)
+        self.assertIn("total skills: 1", out)
+
+
 if __name__ == "__main__":
     unittest.main()
