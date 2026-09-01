@@ -13,6 +13,11 @@ directory: the curator subprocess runs with HERMES_HOME pinned to that profile
 rather than inheriting the ambient environment. Use --hermes-home only when the
 skills directory is not a profile's `skills/` child; a --hermes-home that
 disagrees with --skills-dir is rejected as ambiguous.
+
+Manifest discovery is root-isolated: every SKILL.md is resolved and must remain
+below the resolved skills directory. Symlinks within the library are allowed;
+any manifest resolving outside it aborts the audit rather than reporting
+out-of-library data as library data.
 """
 
 from __future__ import annotations
@@ -126,13 +131,42 @@ def load_usage(
     }
 
 
-def skill_files(skills_dir: Path) -> list[Path]:
-    """Return active skill manifests, excluding curator-managed hidden trees."""
-    return sorted(
-        path
-        for path in skills_dir.rglob("SKILL.md")
-        if not any(part.startswith(".") for part in path.relative_to(skills_dir).parts)
-    )
+def contained_manifest(path: Path, resolved_root: Path) -> Path | None:
+    """Return the resolved manifest only when it stays below `resolved_root`.
+
+    `Path.resolve()` collapses every symlink in the chain, so one containment
+    check covers both a symlinked SKILL.md and a symlinked parent directory.
+    In-root symlinks remain legal; escapes do not. Mirrors the policy already
+    enforced by verify_ptrs.safe_target().
+    """
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError:
+        return None
+    try:
+        resolved.relative_to(resolved_root)
+    except ValueError:
+        return None
+    return resolved
+
+
+def skill_files(skills_dir: Path) -> tuple[list[Path], list[Path]]:
+    """Split discovered manifests into contained and escaping paths.
+
+    Hidden trees (curator archives) are excluded before any resolution, so an
+    archived skill is never reported as an escape.
+    """
+    resolved_root = skills_dir.resolve()
+    contained: list[Path] = []
+    escaped: list[Path] = []
+    for path in sorted(skills_dir.rglob("SKILL.md")):
+        if any(part.startswith(".") for part in path.relative_to(skills_dir).parts):
+            continue
+        if contained_manifest(path, resolved_root) is None:
+            escaped.append(path)
+        else:
+            contained.append(path)
+    return contained, escaped
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -174,7 +208,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
     rows: list[tuple[int, int, str, str, str, str, str]] = []
-    for skill_file in skill_files(skills_dir):
+    manifests, escaped = skill_files(skills_dir)
+    if escaped:
+        print("ESCAPING MANIFESTS (resolve outside the skill library):", file=sys.stderr)
+        for path in escaped:
+            print(
+                f" - {path.relative_to(skills_dir).as_posix()} -> "
+                f"{os.path.realpath(path)}",
+                file=sys.stderr,
+            )
+        print(
+            "Refusing to audit: these would report out-of-library data as library "
+            "data. Remove or re-point the symlinks, then re-run.",
+            file=sys.stderr,
+        )
+        return 1
+    for skill_file in manifests:
         text = skill_file.read_text(encoding="utf-8")
         try:
             skill_name = manifest_skill_name(text, skill_file)

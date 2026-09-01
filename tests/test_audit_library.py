@@ -166,5 +166,108 @@ class TelemetryProfileScopeTests(unittest.TestCase):
         self.assertIn("mutually exclusive", err.getvalue())
 
 
+class ManifestRootIsolationTests(unittest.TestCase):
+    """Regression coverage for issue #2: discovery must not escape the root."""
+
+    def _library(self, root: Path) -> Path:
+        skills = root / "skills"
+        real = skills / "real"
+        real.mkdir(parents=True)
+        (real / "SKILL.md").write_text("---\nname: real\n---\n# real\n", encoding="utf-8")
+        outside = root / "outside" / "secret"
+        outside.mkdir(parents=True)
+        (outside / "SKILL.md").write_text(
+            "---\nname: outside-secret\n---\n# not library data\n", encoding="utf-8"
+        )
+        usage = root / "usage.json"
+        usage.write_text(
+            json.dumps(
+                [
+                    {"name": "real", "use_count": 3, "state": "active"},
+                    {"name": "outside-secret", "use_count": 99, "state": "active"},
+                ]
+            ),
+            encoding="utf-8",
+        )
+        return skills
+
+    def _run(self, skills: Path, usage: Path) -> tuple[int, str, str]:
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            status = audit_library.main(
+                ["--skills-dir", str(skills), "--usage-json", str(usage)]
+            )
+        return status, out.getvalue(), err.getvalue()
+
+    def test_symlinked_manifest_file_escape_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            skills = self._library(root)
+            link = skills / "filelink"
+            link.mkdir()
+            (link / "SKILL.md").symlink_to(root / "outside" / "secret" / "SKILL.md")
+            status, out, err = self._run(skills, root / "usage.json")
+
+        self.assertEqual(status, 1)
+        self.assertIn("ESCAPING MANIFESTS", err)
+        self.assertIn("filelink/SKILL.md", err)
+        # No out-of-library identity, size, or telemetry may be reported.
+        self.assertNotIn("outside-secret", out)
+        self.assertNotIn("99", out)
+        self.assertNotIn("total chars", out)
+
+    def test_symlinked_parent_directory_escape_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            skills = self._library(root)
+            (skills / "dirlink").symlink_to(
+                root / "outside" / "secret", target_is_directory=True
+            )
+            manifests, escaped = audit_library.skill_files(skills)
+
+            # rglob's traversal of symlinked directories is version-dependent;
+            # assert the invariant instead: nothing outside the root survives.
+            resolved_root = skills.resolve()
+            for manifest in manifests:
+                self.assertEqual(
+                    manifest.resolve().relative_to(resolved_root).parts[0], "real"
+                )
+            for path in escaped:
+                self.assertFalse(
+                    str(path.resolve()).startswith(str(resolved_root) + os.sep)
+                )
+
+            status, out, _err = self._run(skills, root / "usage.json")
+
+        if escaped:
+            self.assertEqual(status, 1)
+        else:
+            self.assertEqual(status, 0)
+            self.assertNotIn("outside-secret", out)
+
+    def test_symlink_inside_the_library_is_allowed(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            skills = self._library(root)
+            (skills / "alias").symlink_to(skills / "real", target_is_directory=True)
+            status, out, err = self._run(skills, root / "usage.json")
+
+        self.assertEqual(status, 0, msg=err)
+        self.assertIn("real", out)
+        self.assertNotIn("ESCAPING", err)
+
+    def test_broken_manifest_symlink_is_not_audited(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            skills = self._library(root)
+            broken = skills / "broken"
+            broken.mkdir()
+            (broken / "SKILL.md").symlink_to(root / "nonexistent" / "SKILL.md")
+            status, _out, err = self._run(skills, root / "usage.json")
+
+        self.assertEqual(status, 1)
+        self.assertIn("broken/SKILL.md", err)
+
+
 if __name__ == "__main__":
     unittest.main()
