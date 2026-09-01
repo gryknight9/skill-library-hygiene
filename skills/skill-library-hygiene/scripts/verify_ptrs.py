@@ -84,6 +84,24 @@ def safe_target(root: Path, relative: Path) -> Path | None:
     return target
 
 
+def installed_skill_dir(library_root: Path, skill_name: str) -> Path | None:
+    """Resolve an installed cross-skill target below the library root.
+
+    This checker is deliberately not a general manifest schema linter; Hermes'
+    native `skills check` owns that. For pointer-integrity purposes, an
+    installed skill is a contained directory with its own contained SKILL.md.
+    In-root directory/file symlinks are allowed, while escapes and broken links
+    are rejected.
+    """
+    skill_dir = safe_target(library_root, Path(skill_name))
+    if skill_dir is None or not skill_dir.is_dir():
+        return None
+    manifest = safe_target(skill_dir, Path("SKILL.md"))
+    if manifest is None or not manifest.is_file():
+        return None
+    return skill_dir
+
+
 def verify(skill_dir: Path, library_root: Path) -> tuple[list[str], list[str], list[str]]:
     """Return missing local, missing cross-skill, and unsafe pointer lists."""
     skill_file = skill_dir / "SKILL.md"
@@ -100,6 +118,13 @@ def verify(skill_dir: Path, library_root: Path) -> tuple[list[str], list[str], l
             unsafe_failures.append(f"{pointer.text} (absolute path)")
             continue
         root = skill_dir if pointer.kind == "local" else library_root
+        if pointer.kind == "cross-skill":
+            target_skill = installed_skill_dir(library_root, pointer.relative.parts[0])
+            if target_skill is None:
+                cross_failures.append(
+                    f"{pointer.text} (target is not an installed skill)"
+                )
+                continue
         target = safe_target(root, pointer.relative)
         if target is None:
             failure = f"{pointer.text} (unsafe path)"

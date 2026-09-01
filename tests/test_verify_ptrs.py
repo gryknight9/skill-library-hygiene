@@ -63,8 +63,12 @@ class VerifyPointersTests(unittest.TestCase):
         self.assertIn("references/missing.md", output)
 
     def test_existing_cross_skill_pointer_passes(self) -> None:
-        target = self.library / "other-skill" / "references"
+        target_skill = self.library / "other-skill"
+        target = target_skill / "references"
         target.mkdir(parents=True)
+        (target_skill / "SKILL.md").write_text(
+            "---\nname: other-skill\n---\n# Other\n", encoding="utf-8"
+        )
         (target / "topic.md").write_text("ok", encoding="utf-8")
         self.write_skill("other-skill/references/topic.md")
 
@@ -73,7 +77,72 @@ class VerifyPointersTests(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertIn("all reference pointers resolve safely", output)
 
+    def test_existing_reference_under_non_skill_directory_fails(self) -> None:
+        arbitrary = self.library / "arbitrary-directory" / "references"
+        arbitrary.mkdir(parents=True)
+        (arbitrary / "topic.md").write_text("exists but is not a skill", encoding="utf-8")
+        self.write_skill("arbitrary-directory/references/topic.md")
+
+        status, output = self.invoke_checker()
+
+        self.assertEqual(status, 1)
+        self.assertIn("CROSS-SKILL MISSING OR UNSAFE", output)
+        self.assertIn("target is not an installed skill", output)
+        self.assertNotIn("all reference pointers resolve safely", output)
+
+    def test_cross_skill_with_escaping_manifest_symlink_fails(self) -> None:
+        target = self.library / "other-skill"
+        references = target / "references"
+        references.mkdir(parents=True)
+        (references / "topic.md").write_text("exists", encoding="utf-8")
+        outside_manifest = self.root / "outside-SKILL.md"
+        outside_manifest.write_text("---\nname: fake\n---\n", encoding="utf-8")
+        (target / "SKILL.md").symlink_to(outside_manifest)
+        self.write_skill("other-skill/references/topic.md")
+
+        status, output = self.invoke_checker()
+
+        self.assertEqual(status, 1)
+        self.assertIn("target is not an installed skill", output)
+
+    def test_cross_skill_directory_symlink_escape_fails(self) -> None:
+        outside = self.root / "outside-skill"
+        references = outside / "references"
+        references.mkdir(parents=True)
+        (outside / "SKILL.md").write_text(
+            "---\nname: outside-skill\n---\n", encoding="utf-8"
+        )
+        (references / "topic.md").write_text("exists", encoding="utf-8")
+        (self.library / "other-skill").symlink_to(outside, target_is_directory=True)
+        self.write_skill("other-skill/references/topic.md")
+
+        status, output = self.invoke_checker()
+
+        self.assertEqual(status, 1)
+        self.assertIn("target is not an installed skill", output)
+
+    def test_in_library_symlink_to_installed_skill_passes(self) -> None:
+        real = self.library / "real-skill"
+        references = real / "references"
+        references.mkdir(parents=True)
+        (real / "SKILL.md").write_text(
+            "---\nname: real-skill\n---\n", encoding="utf-8"
+        )
+        (references / "topic.md").write_text("ok", encoding="utf-8")
+        (self.library / "other-skill").symlink_to(real, target_is_directory=True)
+        self.write_skill("other-skill/references/topic.md")
+
+        status, output = self.invoke_checker()
+
+        self.assertEqual(status, 0)
+        self.assertIn("all reference pointers resolve safely", output)
+
     def test_missing_cross_skill_pointer_fails(self) -> None:
+        target = self.library / "other-skill"
+        target.mkdir()
+        (target / "SKILL.md").write_text(
+            "---\nname: other-skill\n---\n", encoding="utf-8"
+        )
         self.write_skill("other-skill/references/missing.md")
 
         status, output = self.invoke_checker()
