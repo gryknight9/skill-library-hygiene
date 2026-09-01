@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
 """Report active SKILL.md size alongside Hermes curator telemetry.
 
-Usage: audit_library.py [--skills-dir PATH] [--usage-json PATH]
+Usage: audit_library.py [--skills-dir PATH] [--hermes-home PATH]
+                       [--usage-json PATH]
 
 By default, skills are read from $HERMES_HOME/skills (or ~/.hermes/skills) and
 telemetry is read from `hermes curator usage --json`. --usage-json makes the
 script deterministic for tests and offline review.
+
+Telemetry is always collected from the profile that owns the audited skills
+directory: the curator subprocess runs with HERMES_HOME pinned to that profile
+rather than inheriting the ambient environment. Use --hermes-home only when the
+skills directory is not a profile's `skills/` child; a --hermes-home that
+disagrees with --skills-dir is rejected as ambiguous.
 """
 
 from __future__ import annotations
@@ -20,8 +27,50 @@ from pathlib import Path
 from typing import Any, Sequence
 
 
+def default_hermes_home() -> Path:
+    return Path(os.environ.get("HERMES_HOME", "~/.hermes")).expanduser()
+
+
 def default_skills_dir() -> Path:
-    return Path(os.environ.get("HERMES_HOME", "~/.hermes")).expanduser() / "skills"
+    return default_hermes_home() / "skills"
+
+
+def derive_hermes_home(skills_dir: Path) -> Path | None:
+    """Infer the owning profile home from a resolved skills directory.
+
+    A Hermes profile always stores manifests in `<HERMES_HOME>/skills`, so the
+    parent of a directory literally named `skills` is the profile home. Any
+    other layout is not derivable and must be stated explicitly.
+    """
+    if skills_dir.name == "skills":
+        return skills_dir.parent
+    return None
+
+
+def resolve_telemetry_home(skills_dir: Path, hermes_home: Path | None) -> Path:
+    """Pick the profile whose curator telemetry describes `skills_dir`.
+
+    Raises ValueError on ambiguous combinations rather than silently joining
+    manifests from one profile to usage records from another.
+    """
+    derived = derive_hermes_home(skills_dir)
+    if hermes_home is None:
+        if derived is None:
+            raise ValueError(
+                f"cannot derive a Hermes profile from {skills_dir} "
+                "(expected a directory named 'skills'); pass --hermes-home "
+                "or --usage-json"
+            )
+        return derived
+    explicit = hermes_home.expanduser().resolve()
+    if derived is not None and derived != explicit:
+        raise ValueError(
+            f"ambiguous profile: --skills-dir {skills_dir} belongs to {derived} "
+            f"but --hermes-home is {explicit}"
+        )
+    if not (explicit / "skills").is_dir():
+        raise ValueError(f"--hermes-home {explicit} has no skills directory")
+    return explicit
 
 
 def manifest_skill_name(text: str, source: Path) -> str:
@@ -40,15 +89,27 @@ def manifest_skill_name(text: str, source: Path) -> str:
     raise ValueError(f"{source}: missing frontmatter name")
 
 
-def load_usage(usage_json: Path | None) -> dict[str, dict[str, Any]]:
-    """Load curator records keyed by skill name."""
+def load_usage(
+    usage_json: Path | None, hermes_home: Path | None = None
+) -> dict[str, dict[str, Any]]:
+    """Load curator records keyed by skill name.
+
+    When reading live telemetry, HERMES_HOME is pinned to `hermes_home` so the
+    curator reports on the profile being audited instead of whichever profile
+    happens to own the ambient environment.
+    """
     if usage_json is None:
+        if hermes_home is None:
+            raise ValueError("live curator telemetry requires a resolved HERMES_HOME")
+        env = dict(os.environ)
+        env["HERMES_HOME"] = str(hermes_home)
         result = subprocess.run(
             ["hermes", "curator", "usage", "--json"],
             check=False,
             capture_output=True,
             text=True,
             timeout=30,
+            env=env,
         )
         if result.returncode:
             raise RuntimeError(result.stderr.strip() or "hermes curator usage failed")
@@ -77,14 +138,37 @@ def skill_files(skills_dir: Path) -> list[Path]:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--skills-dir", type=Path, default=default_skills_dir())
+    parser.add_argument(
+        "--hermes-home",
+        type=Path,
+        help="Profile home supplying curator telemetry. Defaults to the parent "
+        "of --skills-dir. Must not contradict --skills-dir.",
+    )
     parser.add_argument("--usage-json", type=Path)
     args = parser.parse_args(argv)
     skills_dir = args.skills_dir.expanduser().resolve()
     if not skills_dir.is_dir():
         print(f"MISSING SKILL LIBRARY: {skills_dir}", file=sys.stderr)
         return 1
+    telemetry_home: Path | None = None
+    if args.usage_json is None:
+        try:
+            telemetry_home = resolve_telemetry_home(skills_dir, args.hermes_home)
+        except ValueError as exc:
+            print(f"PROFILE RESOLUTION ERROR: {exc}", file=sys.stderr)
+            return 1
+    elif args.hermes_home is not None:
+        print(
+            "PROFILE RESOLUTION ERROR: --usage-json and --hermes-home are mutually "
+            "exclusive; the JSON file already fixes the telemetry source",
+            file=sys.stderr,
+        )
+        return 1
     try:
-        usage = load_usage(args.usage_json.expanduser() if args.usage_json else None)
+        usage = load_usage(
+            args.usage_json.expanduser() if args.usage_json else None,
+            telemetry_home,
+        )
     except (OSError, ValueError, json.JSONDecodeError, RuntimeError, subprocess.TimeoutExpired) as exc:
         print(f"USAGE TELEMETRY ERROR: {exc}", file=sys.stderr)
         return 1
@@ -111,6 +195,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         )
 
+    source = str(telemetry_home) if telemetry_home else f"file:{args.usage_json}"
+    print(f"skills dir: {skills_dir}")
+    print(f"telemetry source: {source}")
     print(" chars  uses  last-activity               state     provenance  skill")
     for chars, uses, activity, state, provenance, relative, _name in sorted(rows, reverse=True):
         print(f"{chars:>6}  {uses:>4}  {activity:<26}  {state:<8}  {provenance:<10}  {relative}")
