@@ -27,6 +27,8 @@ skill-library-hygiene/
 ├── tests/
 │   ├── test_audit_library.py
 │   └── test_verify_ptrs.py
+├── scripts/
+│   └── verify.sh
 └── README.md
 ```
 
@@ -143,7 +145,7 @@ python3 skills/skill-library-hygiene/scripts/verify_ptrs.py <skill-dir>
 | Capability | `agent-skills-lint` | Skill Library Hygiene |
 |---|---:|---:|
 | YAML/frontmatter schema validation | Yes | No general schema linter |
-| Name collision detection | Yes | No |
+| Name collision detection | Yes | Yes (manifest identity collisions) |
 | Description and empty-body diagnostics | Yes | No |
 | Cross-agent installation and index generation | Yes | No |
 | Hermes profile-aware root via `$HERMES_HOME` | No | Yes |
